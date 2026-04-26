@@ -35,19 +35,20 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import log_say
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-NUM_EPISODES   = 50
+NUM_EPISODES   = 100
 FPS            = 30
 EPISODE_TIME_S = 60
 RESET_TIME_S   = 15
-TASK           = "Pick screw from bin and place in container"
-HF_REPO_ID     = "robotnana/screw_picking"
+TASK           = "Pick the screw"
+HF_REPO_ID     = "rlodhi/screw_pick_perfect"
 
-FOLLOWER_PORT  = "/dev/ttyACM1"
-LEADER_PORT    = "/dev/ttyACM0"
+FOLLOWER_PORT  = "/dev/ttyACM0"
+LEADER_PORT    = "/dev/ttyACM1"
 
 CAMERAS = {
     "base":  RealSenseCameraConfig(serial_number_or_name="838212073725", width=640, height=480, fps=30),
-    "wrist": OpenCVCameraConfig(index_or_path="/dev/video9", width=640, height=480, fps=30),
+    # "base":  OpenCVCameraConfig(index_or_path="/dev/video16", width=640, height=480, fps=60),
+    "wrist": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=30),
 }
 
 

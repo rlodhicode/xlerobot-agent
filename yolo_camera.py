@@ -320,16 +320,29 @@ MAX_SCREWS = 5  # maximum detections stored in the fixed-size array
 def observe_screws(
     target_object: str = "screw",
     confidence_threshold: float = 0.25,
+    frame_rgb: np.ndarray | None = None,
+    depth_map: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """
-    Capture a frame, run YOLO, return detections plus a fixed-size xyz array.
+    Run YOLO on a frame and return detections plus a fixed-size xyz array.
+
+    If frame_rgb is provided it is used directly (no camera is opened).  Pass
+    a frame from the robot's already-connected camera to avoid conflicting with
+    lerobot's camera ownership.
+
+    If frame_rgb is None the module-level camera singleton is used (standalone
+    / notebook use).
 
     The 'screw_xyz' field is a float32 array of shape (MAX_SCREWS * 3,):
         [x0, y0, z0, x1, y1, z1, ..., xN, yN, zN, 0, 0, 0, ...]
-    Zero-padding fills any unfilled slots.  The policy can learn to ignore
-    zero-padded entries (typically the first few will always be populated).
+    Zero-padding fills any unfilled slots.
     """
-    frame_rgb, depth_map, frame_b64, cap_err = capture_frame()
+    cap_err = ""
+    if frame_rgb is None:
+        frame_rgb, depth_map, frame_b64, cap_err = capture_frame()
+    else:
+        frame_b64 = _frame_to_base64(frame_rgb)
+
     if frame_rgb is None:
         return {
             "error": cap_err,

@@ -7,7 +7,7 @@ name = "xlerobot-soft-orchestrator"
 version = "0.1.0"
 description = "XLErobot-Pro ReAct manipulation orchestrator — LangGraph + capability registry."
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.10,<3.13"
 dependencies = [
   "langgraph>=0.2.50",
   "langchain-core>=0.3.0",
@@ -17,6 +17,7 @@ dependencies = [
   "streamlit>=1.40.0",
   "python-dotenv>=1.0.1",
   "pydantic-settings>=2.6.1",
+  "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
