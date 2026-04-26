@@ -3,8 +3,10 @@ screw_picking:
   policy_type: "smolvla"
   repo_id: "rlodhi/smolvla_screw_picking_clean_25k"
   task: "pick the screw"
+  typical_wait_time: 75
 
 screw_placing:
   policy_type: "smolvla"
   repo_id: "rlodhi/smolvla_screw_placing_5000"
   task: "place the screw in the container"
+  typical_wait_time: 35

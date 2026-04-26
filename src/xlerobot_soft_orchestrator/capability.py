@@ -356,6 +356,7 @@ def _start_vla_policy(policy_id: str, **kwargs: Any) -> dict[str, Any]:
         ),
         "pid": _vla_process.pid,
         "log_file": str(_vla_log_path),
+        "typical_wait_time": policy_cfg.get("typical_wait_time", 30),
     }
 
 
@@ -834,19 +835,20 @@ Returns: same schema as yolo_base_camera.
             "  inference robot client as a background subprocess.\n\n"
             "  Available policies (from policies.yaml):\n"
             + "\n".join(
-                f"    {pid}: task=\"{cfg['task']}\", type={cfg['policy_type']}"
+                f"    {pid}: task=\"{cfg['task']}\", type={cfg['policy_type']}, typical_wait_time={cfg.get('typical_wait_time', 30)}s"
                 for pid, cfg in POLICIES.items()
             )
             + "\n\n"
             "Required args:\n"
             "  policy_id (str) — ID from the list above, e.g. 'screw_picking'.\n\n"
             "Returns:\n"
-            "  status:  \"SUCCESS\" or \"FAILURE\"\n"
-            "  message: confirmation with task description\n"
-            "  pid:     OS process ID of the launched client\n\n"
+            "  status:           \"SUCCESS\" or \"FAILURE\"\n"
+            "  message:          confirmation with task description\n"
+            "  pid:              OS process ID of the launched client\n"
+            "  typical_wait_time: recommended seconds to wait before observing\n\n"
             "IMPORTANT: This call BLOCKS until the model is loaded and action chunks are\n"
             "flowing (or until the 5-minute timeout). On SUCCESS the robot is already moving.\n"
-            "Call wait (e.g. 20 seconds) to let the policy execute further, then observe\n"
+            "Use the returned typical_wait_time as your first wait duration, then observe\n"
             "to verify success.  Repeat wait+observe until done, then call stop_vla_policy."
         ),
         fn=_start_vla_policy,

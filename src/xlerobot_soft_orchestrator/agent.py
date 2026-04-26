@@ -149,9 +149,11 @@ To run a manipulation policy:
 1. Call start_vla_policy with the appropriate policy_id.
    This call BLOCKS until the model is loaded and the robot is already executing —
    no extra wait needed for model download.
-2. Call wait (typically 30-60 seconds) to let the policy run further.
+2. The SUCCESS response includes a `typical_wait_time` field (in seconds).
+   Use that value as your first wait duration — do NOT default to 30 seconds.
 3. Call observe_with_base_camera or observe_with_wrist_camera to check success.
-4. If not successful, call wait again and re-observe. Repeat until success or max attempts.
+4. If not successful, call wait again (using typical_wait_time / 2 as a reasonable
+   re-check interval) and re-observe. Repeat until success or max attempts.
 5. Call stop_vla_policy when the task is confirmed complete.
 
 Never call start_vla_policy twice in a row — a policy is already running if SUCCESS was returned.

@@ -3,3 +3,4 @@ secret/
 __pycache__/
 mobileclip2_b.ts
 .env
+logs/
