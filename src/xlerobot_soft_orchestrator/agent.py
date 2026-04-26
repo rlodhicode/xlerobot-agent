@@ -29,10 +29,12 @@ from langgraph.prebuilt import ToolNode
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_google_vertexai import ChatVertexAI
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langgraph.graph import END, START, StateGraph
 
 from .capability import TOOLS
-from .config import Settings, configure_langsmith, get_settings
+from .config import Settings, configure_langsmith, get_settings, resolve_model
 
 _FRAME_B64_KEYS = ("frame_b64", "base_frame_b64", "wrist_frame_b64")
 
@@ -320,16 +322,17 @@ def reason_node(state: AgentState, llm: LLMLike, max_iterations: int) -> dict[st
 # LLM Factory
 # ---------------------------------------------------------------------------
 
-def get_vertex_llm(settings: Settings, model_name: str | None = None) -> ChatVertexAI:
+def get_vertex_llm(settings: Settings, model_name: str) -> ChatVertexAI:
     return ChatVertexAI(
         model_name=model_name or settings.vertex_model,
         project=settings.vertex_project_id,
         location=settings.vertex_location,
         temperature=0,
-        include_thoughts = True,
+        include_thoughts=True,
     )
 
-def get_ollama_llm(settings: Settings, model_name: str | None = None) -> ChatOllama:
+
+def get_ollama_llm(settings: Settings, model_name: str) -> ChatOllama:
     return ChatOllama(
         model=model_name or settings.ollama_model,
         base_url=settings.ollama_base_url,
@@ -337,20 +340,52 @@ def get_ollama_llm(settings: Settings, model_name: str | None = None) -> ChatOll
         reasoning=True,
     )
 
+
+# todo: langchain docs don't expose any CoT props to expose reasoning. see if modles like 5.4mini do this automatically.
+def get_openai_llm(settings: Settings, model_name: str) -> ChatOpenAI:
+    return ChatOpenAI(
+        model=model_name or settings.openai_model,
+        api_key=settings.openai_api_key or None,
+        temperature=0,
+    )
+
+
+def get_anthropic_llm(settings: Settings, model_name: str) -> ChatAnthropic:
+    kwargs: dict = dict(
+        model=model_name or settings.anthropic_model,
+        api_key=settings.anthropic_api_key or None,
+    )
+    if settings.anthropic_thinking_budget > 0:
+        # Extended thinking requires temperature=1; exposes {"type":"thinking"} blocks
+        # which reason_node already handles (same format as Vertex).
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": settings.anthropic_thinking_budget}
+        kwargs["temperature"] = 1
+    else:
+        kwargs["temperature"] = 0
+    return ChatAnthropic(**kwargs)
+
+
+_PROVIDER_FACTORIES = {
+    "vertex": get_vertex_llm,
+    "ollama": get_ollama_llm,
+    "openai": get_openai_llm,
+    "anthropic": get_anthropic_llm,
+}
+
+
 def get_llm() -> LLMLike:
     settings = get_settings()
     configure_langsmith(settings)
 
     provider = settings.llm_provider.strip().lower()
-    model_name = settings.llm_model.strip() or None
-    if provider == "vertex":
-        model = get_vertex_llm(settings, model_name)
-    elif provider == "ollama":
-        model = get_ollama_llm(settings, model_name)
-    else:
-        raise ValueError(f"Unsupported LLM_PROVIDER '{settings.llm_provider}'. Use 'vertex' or 'ollama'.")
+    model_name = resolve_model(settings)
 
-    return model.bind_tools(TOOLS)
+    factory = _PROVIDER_FACTORIES.get(provider)
+    if factory is None:
+        supported = ", ".join(sorted(_PROVIDER_FACTORIES))
+        raise ValueError(f"Unsupported LLM_PROVIDER '{provider}'. Choose one of: {supported}.")
+
+    return factory(settings, model_name).bind_tools(TOOLS)
 
 # ---------------------------------------------------------------------------
 # Public API
