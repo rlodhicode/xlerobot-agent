@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import traceback
+import uuid
 from pathlib import Path
 
 import streamlit as st
@@ -54,11 +55,9 @@ def render_tool_status(
         if not is_running:
             st.write("**Observation Result:**")
 
-            # Try to parse the result as JSON so we can handle images specially
             parsed = _parse_tool_result(result_summary)
 
             if parsed is not None:
-                # Extract all frame keys up front so they never leak into the Details JSON
                 frame_b64: str       = parsed.pop("frame_b64",       "") or ""
                 base_frame_b64: str  = parsed.pop("base_frame_b64",  "") or ""
                 wrist_frame_b64: str = parsed.pop("wrist_frame_b64", "") or ""
@@ -82,11 +81,9 @@ def render_tool_status(
                 elif frame_b64:
                     _show_image(frame_b64, f"Camera frame — {parsed.get('camera_info', '')}")
 
-                # Show remaining fields as JSON (frame_b64 already popped)
                 if parsed.get("error"):
                     st.error(f"⚠️ {parsed['error']}")
 
-                # Detected objects table if present
                 detected = parsed.get("detected")
                 if detected:
                     st.write(f"**Detected objects ({parsed.get('count', len(detected))}):**")
@@ -102,7 +99,6 @@ def render_tool_status(
                         })
                     st.dataframe(rows, use_container_width=True)
 
-                # Remaining metadata (note, camera_info, etc.)
                 _exclude = {"detected", "count", "error", "frame_b64", "base_frame_b64", "wrist_frame_b64"}
                 meta = {
                     k: v for k, v in parsed.items()
@@ -114,7 +110,6 @@ def render_tool_status(
                         st.json(meta)
 
             else:
-                # Fallback: plain text / error display
                 if "ERROR" in result_summary.upper():
                     st.error(result_summary)
                 else:
@@ -146,21 +141,45 @@ def extract_reasoning_from_message_content(content: object) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
+def render_past_turn(turn: dict, expand_thinking: bool = False) -> None:
+    """Render a completed conversation turn from history."""
+    st.chat_message("human").write(turn["directive"])
+    with st.chat_message("ai"):
+        for i, step in enumerate(turn["steps"]):
+            if step.get("reasoning"):
+                render_reasoning(step["reasoning"], expanded=False)
+            render_tool_status(i + 1, step["cap_id"], step["args"], step["result_summary"])
+        if turn["final_response"]:
+            st.info(f"**Final Summary:** {turn['final_response']}")
+
+
 # ---------------------------------------------------------------------------
-# Page Config
+# Thread state — thread_id lives in the URL (?thread=<uuid>)
+# Conversation history lives in session_state (ephemeral, within browser session)
 # ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="XLErobot-Pro Orchestrator", layout="wide", page_icon="🤖")
 
-st.title("🤖 XLErobot-Pro Orchestrator")
-st.caption("ReAct loop: Reason → Act → Observe → Reason")
+# Sync thread_id between URL and session_state.
+# URL is the source of truth so the thread is bookmarkable / shareable.
+_url_thread = st.query_params.get("thread")
+if _url_thread:
+    if st.session_state.get("thread_id") != _url_thread:
+        # URL changed (e.g. user navigated to a shared link) — reset conversation.
+        st.session_state.thread_id = _url_thread
+        st.session_state.conversation = []
+else:
+    if "thread_id" not in st.session_state:
+        st.session_state.thread_id = str(uuid.uuid4())
+    st.query_params["thread"] = st.session_state.thread_id
 
-if "history" not in st.session_state:
-    st.session_state.history = []
+if "conversation" not in st.session_state:
+    st.session_state.conversation = []
 
 # ---------------------------------------------------------------------------
-# Sidebar / Settings
+# Sidebar
 # ---------------------------------------------------------------------------
+
 with st.sidebar:
     st.header("Settings")
     expand_thinking = st.toggle("Expand thinking by default", value=False)
@@ -173,64 +192,84 @@ with st.sidebar:
         "Set `OPENCV_CAMERA_INDEX=<n>` to pick a different USB camera."
     )
 
+    st.divider()
+    st.subheader("Thread")
+    turn_count = len(st.session_state.conversation)
+    st.caption(f"**ID:** `{st.session_state.thread_id}`")
+    st.caption(f"{turn_count} turn{'s' if turn_count != 1 else ''}")
+    if st.button("New Thread", use_container_width=True):
+        new_id = str(uuid.uuid4())
+        st.session_state.thread_id = new_id
+        st.session_state.conversation = []
+        st.query_params["thread"] = new_id
+        st.rerun()
+
 # ---------------------------------------------------------------------------
-# Main Logic
+# Main
 # ---------------------------------------------------------------------------
+
+st.title("🤖 XLErobot-Pro Orchestrator")
+st.caption("ReAct loop: Reason → Act → Observe → Reason")
 
 async def main():
-    directive = st.text_area(
-        "Robot directive",
-        placeholder='e.g. "Look at the workspace and tell me what you see."',
-        height=100,
-    )
-    run_clicked = st.button("▶ Run Orchestrator", type="primary", use_container_width=True)
+    # Render all past turns in this thread first
+    for turn in st.session_state.conversation:
+        render_past_turn(turn, expand_thinking=expand_thinking)
 
-    if run_clicked and directive.strip():
-        st.chat_message("human").write(directive.strip())
+    directive = st.chat_input(
+        placeholder='e.g. "Look at the workspace and tell me what you see."'
+    )
+
+    if directive:
+        st.chat_message("human").write(directive)
+
+        current_steps: list[dict] = []
+        final_response = ""
+        pending_reasoning = ""
+        pending_args: dict = {}
 
         with st.chat_message("ai"):
-            container = st.container()
-
             try:
                 last_step_rendered = 0
 
-                async for update in astream_directive(directive.strip()):
+                async for update in astream_directive(directive, thread_id=st.session_state.thread_id):
                     node_name = list(update.keys())[0]
                     node_data = update[node_name]
 
-                    # 1. Reasoning node
                     if node_name == "reason":
+                        reasoning = ""
                         if "trace" in node_data:
                             event = node_data["trace"][-1]
                             reasoning = event.get("reasoning", "")
 
-                            if not reasoning and "messages" in node_data:
-                                for msg in node_data["messages"]:
-                                    content_obj = getattr(msg, "content", "")
-                                    reasoning = extract_reasoning_from_message_content(content_obj)
-                                    if reasoning:
-                                        break
-                                    raw = str(content_obj or "")
-                                    m = re.search(r"<think>(.*?)</think>", raw, re.DOTALL)
-                                    if m:
-                                        reasoning = m.group(1).strip()
-                                        break
+                        if not reasoning and "messages" in node_data:
+                            for msg in node_data["messages"]:
+                                content_obj = getattr(msg, "content", "")
+                                reasoning = extract_reasoning_from_message_content(content_obj)
+                                if reasoning:
+                                    break
+                                raw = str(content_obj or "")
+                                m = re.search(r"<think>(.*?)</think>", raw, re.DOTALL)
+                                if m:
+                                    reasoning = m.group(1).strip()
+                                    break
 
-                            render_reasoning(reasoning, expanded=expand_thinking)
+                        pending_reasoning = reasoning
+                        render_reasoning(reasoning, expanded=expand_thinking)
 
                         if "messages" in node_data:
                             for msg in node_data["messages"]:
                                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                                     for call in msg.tool_calls:
+                                        pending_args = call.get("args", {})
                                         render_tool_status(
                                             step_num=last_step_rendered + 1,
                                             cap_id=call["name"],
-                                            args=call.get("args", {}),
+                                            args=pending_args,
                                             result_summary="Executing capability...",
                                             is_running=True,
                                         )
 
-                    # 2. Tools node — this is where camera frames arrive
                     elif node_name == "tools":
                         if "messages" in node_data:
                             for msg in node_data["messages"]:
@@ -242,22 +281,29 @@ async def main():
                                         result_summary=msg.content,
                                         is_running=False,
                                     )
+                                    current_steps.append({
+                                        "cap_id": msg.name,
+                                        "args": pending_args,
+                                        "result_summary": msg.content,
+                                        "reasoning": pending_reasoning,
+                                    })
+                                    pending_args = {}
+                                    pending_reasoning = ""
                                     last_step_rendered += 1
 
-                    # Final response
                     if "final_response" in node_data and node_data["final_response"]:
-                        st.info(f"**Final Summary:** {node_data['final_response']}")
+                        final_response = node_data["final_response"]
+                        st.info(f"**Final Summary:** {final_response}")
 
             except Exception as exc:
                 st.error(f"Agent error during execution: {exc}")
                 st.code(traceback.format_exc())
 
-    if st.session_state.history:
-        st.divider()
-        st.subheader("Previous Runs")
-        for entry in st.session_state.history:
-            with st.expander(f"Directive: {entry['directive'][:50]}..."):
-                st.write(entry["final_response"])
+        st.session_state.conversation.append({
+            "directive": directive,
+            "steps": current_steps,
+            "final_response": final_response,
+        })
 
 
 if __name__ == "__main__":

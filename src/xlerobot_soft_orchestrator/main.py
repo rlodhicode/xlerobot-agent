@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import uuid
 
 from .agent import run_directive
 
@@ -11,7 +12,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run software-only orchestration.")
     parser.add_argument("directive", help="User directive to process")
     args = parser.parse_args()
-    result = run_directive(args.directive)
+    result = run_directive(args.directive, thread_id=str(uuid.uuid4()))
     print(result.final_response)
     print("\nTrace:")
     for event in result.trace:

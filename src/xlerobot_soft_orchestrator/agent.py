@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import operator
+import uuid
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol, TypedDict, AsyncGenerator, Callable
 
@@ -407,11 +408,12 @@ def build_graph(llm: LLMLike, max_iterations: int = 10):
     )
     return workflow.compile()
 
-async def astream_directive(directive: str) -> AsyncGenerator[dict[str, Any], None]:
+async def astream_directive(directive: str, thread_id: str | None = None) -> AsyncGenerator[dict[str, Any], None]:
     settings = get_settings()
     model = get_llm()
     graph = build_graph(model, settings.max_iterations)
-    
+
+    run_thread_id = thread_id or str(uuid.uuid4())
     initial_state = {
         "directive": directive,
         "messages": [{"role": "user", "content": directive}],
@@ -420,26 +422,32 @@ async def astream_directive(directive: str) -> AsyncGenerator[dict[str, Any], No
         "done": False,
         "final_response": ""
     }
-    
-    async for update in graph.astream(initial_state):
+    config = {"metadata": {"session_id": run_thread_id}}
+
+    async for update in graph.astream(initial_state, config=config):
         yield update
 
-def run_directive(directive: str) -> AgentRunResult:
+def run_directive(directive: str, thread_id: str | None = None) -> AgentRunResult:
     # Legacy sync support
-    return asyncio.run(_run_async_wrapper(directive))
+    return asyncio.run(_run_async_wrapper(directive, thread_id))
 
-async def _run_async_wrapper(directive: str):
+async def _run_async_wrapper(directive: str, thread_id: str | None = None):
     model = get_llm()
     settings = get_settings()
     graph = build_graph(model, settings.max_iterations)
-    res = await graph.ainvoke({
-        "directive": directive,
-        "messages": [{"role": "user", "content": directive}],
-        "trace": [],
-        "step": 0,
-        "done": False,
-        "final_response": ""
-    })
+    run_thread_id = thread_id or str(uuid.uuid4())
+    config = {"metadata": {"session_id": run_thread_id}}
+    res = await graph.ainvoke(
+        {
+            "directive": directive,
+            "messages": [{"role": "user", "content": directive}],
+            "trace": [],
+            "step": 0,
+            "done": False,
+            "final_response": ""
+        },
+        config=config,
+    )
     return AgentRunResult(
         final_response=res.get("final_response", ""),
         trace=res.get("trace", []),
