@@ -11,23 +11,28 @@ The agent runs a ReAct (Reason + Act) loop:
 The loop terminates when the LLM decides the task is done or max_iterations
 is reached.  Every step is recorded in the trace for the UI.
 
-Capability discovery pattern:
-  The system prompt tells the agent to ALWAYS start by calling
-  list_capabilities, then read_capability for any capability it plans
-  to use, then run_capability to execute.  This keeps the prompt stable
-  while capability docs evolve independently.
+Memory:
+  Conversation history is persisted per thread_id in a PostgreSQL database via
+  LangGraph's AsyncPostgresSaver checkpoint system.  If the DB is unreachable
+  the agent falls back to stateless (single-turn) mode with a warning.
+
+  Compaction: when the estimated token count of accumulated messages exceeds
+  COMPACT_TOKEN_THRESHOLD, older messages are summarised and replaced so the
+  LLM context stays manageable.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import operator
 import uuid
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol, TypedDict, AsyncGenerator, Callable
 
 from langgraph.prebuilt import ToolNode
-from langchain_core.messages import AIMessage, SystemMessage
+from langgraph.graph.message import add_messages
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_google_vertexai import ChatVertexAI
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
@@ -37,7 +42,15 @@ from langgraph.graph import END, START, StateGraph
 from .capability import TOOLS
 from .config import Settings, configure_langsmith, get_settings, resolve_model
 
+logger = logging.getLogger(__name__)
+
 _FRAME_B64_KEYS = ("frame_b64", "base_frame_b64", "wrist_frame_b64")
+
+# Token threshold before a compaction summary is triggered (rough char/4 estimate)
+COMPACT_TOKEN_THRESHOLD = 25_000
+# Number of most-recent messages to keep verbatim after compaction
+COMPACT_KEEP_RECENT = 8
+
 
 def _strip_frame_b64_from_tool_messages(messages: list) -> list:
     """Remove all *_frame_b64 keys from tool results before they re-enter the context window.
@@ -72,6 +85,7 @@ def _strip_frame_b64_from_tool_messages(messages: list) -> list:
 
 class LLMLike(Protocol):
     def invoke(self, input_data: Any) -> Any: ...
+    async def ainvoke(self, input_data: Any) -> Any: ...
 
 
 class TraceEvent(TypedDict):
@@ -85,7 +99,8 @@ class TraceEvent(TypedDict):
 
 class AgentState(TypedDict):
     directive: str
-    messages: Annotated[list[dict[str, str]], operator.add]   # running conversation
+    # add_messages handles appending new messages and RemoveMessage-based compaction
+    messages: Annotated[list, add_messages]
     trace: Annotated[list[TraceEvent], operator.add]
     step: int
     done: bool
@@ -170,6 +185,7 @@ Never call start_vla_policy twice in a row — a policy is already running if SU
 
 tool_node = ToolNode(TOOLS)
 
+
 def _extract_text_content(content: Any) -> str:
     """Normalize AI message content into plain text for final summaries."""
     if isinstance(content, str):
@@ -216,17 +232,92 @@ def should_continue_factory(max_iterations: int) -> Callable[[AgentState], str]:
 
     return should_continue
 
+
+# ---------------------------------------------------------------------------
+# Context compaction
+# ---------------------------------------------------------------------------
+
+def _estimate_tokens(messages: list) -> int:
+    total = 0
+    for m in messages:
+        content = getattr(m, "content", "") or ""
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total += len(str(block.get("text", "") or block.get("thinking", "")))
+                else:
+                    total += len(str(block))
+    return total // 4
+
+
+async def _compact_if_needed(messages: list, summary_llm: Any) -> list | None:
+    """Return a list of add_messages-compatible updates (RemoveMessage + summary) or None."""
+    if _estimate_tokens(messages) <= COMPACT_TOKEN_THRESHOLD:
+        return None
+    if len(messages) <= COMPACT_KEEP_RECENT:
+        return None
+
+    to_remove = messages[:-COMPACT_KEEP_RECENT]
+
+    lines: list[str] = []
+    for m in to_remove:
+        role = getattr(m, "type", "message")
+        content = getattr(m, "content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", str(b)) if isinstance(b, dict) else str(b) for b in content
+            )
+        lines.append(f"[{role}] {str(content)[:400]}")
+
+    summary_response = await summary_llm.ainvoke([
+        SystemMessage(
+            content=(
+                "Summarize this robot manipulation conversation concisely (3-5 sentences): "
+                "what tasks were requested, what actions were taken, what was observed, "
+                "and what the outcomes were."
+            )
+        ),
+        HumanMessage(content="\n".join(lines)),
+    ])
+    summary_text = _extract_text_content(summary_response.content)
+
+    removes = [RemoveMessage(id=m.id) for m in to_remove if getattr(m, "id", None)]
+    summary_msg = SystemMessage(content=f"[Prior Conversation Summary]\n{summary_text}")
+    return removes + [summary_msg]
+
+
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
 
-def reason_node(state: AgentState, llm: LLMLike, max_iterations: int) -> dict[str, Any]:
-    system = SYSTEM_PROMPT.replace("{{MAX_ITERATIONS}}", str(max_iterations))
-    # Scrub frame_b64 from any tool messages before they hit the LLM context window
-    clean_messages = _strip_frame_b64_from_tool_messages(state["messages"])
-    messages = [SystemMessage(content=system)] + clean_messages
+async def reason_node(
+    state: AgentState,
+    llm: LLMLike,
+    summary_llm: LLMLike,
+    max_iterations: int,
+) -> dict[str, Any]:
+    # Compact conversation history if it exceeds the token threshold
+    compact_updates = await _compact_if_needed(state["messages"], summary_llm)
+    if compact_updates:
+        ids_to_remove = {u.id for u in compact_updates if isinstance(u, RemoveMessage)}
+        summaries = [u for u in compact_updates if not isinstance(u, RemoveMessage)]
+        messages = [
+            m for m in state["messages"]
+            if getattr(m, "id", None) not in ids_to_remove
+        ]
+        messages = summaries + messages
+        logger.info("Compacted conversation: removed %d messages, added summary.", len(ids_to_remove))
+    else:
+        messages = state["messages"]
+        compact_updates = []
 
-    response = llm.invoke(messages)
+    system = SYSTEM_PROMPT.replace("{{MAX_ITERATIONS}}", str(max_iterations))
+    clean_messages = _strip_frame_b64_from_tool_messages(messages)
+    llm_messages = [SystemMessage(content=system)] + clean_messages
+
+    response = await llm.ainvoke(llm_messages)
 
     tool_calls = getattr(response, "tool_calls", [])
 
@@ -236,10 +327,8 @@ def reason_node(state: AgentState, llm: LLMLike, max_iterations: int) -> dict[st
     reasoning = ""
     additional = getattr(response, "additional_kwargs", {}) or {}
     if additional.get("reasoning_content"):
-        # Ollama path
         reasoning = additional["reasoning_content"]
     elif isinstance(response.content, list):
-        # Vertex path
         parts: list[str] = []
         for b in response.content:
             if not isinstance(b, dict):
@@ -252,11 +341,8 @@ def reason_node(state: AgentState, llm: LLMLike, max_iterations: int) -> dict[st
                 parts.append(b["text"])
         reasoning = "\n\n".join(filter(None, parts))
     elif isinstance(response.content, str):
-        # some gemini models will simply output reasoning as invoked response content
         reasoning = str(response.content)
 
-    # Vertex/Gemini tool-call turns can expose thought metadata/signatures
-    # without plaintext thought text. Surface a bubble anyway for visibility.
     if not reasoning:
         response_meta = getattr(response, "response_metadata", {}) or {}
         usage_meta = response_meta.get("usage_metadata", {}) if isinstance(response_meta, dict) else {}
@@ -280,17 +366,14 @@ def reason_node(state: AgentState, llm: LLMLike, max_iterations: int) -> dict[st
     final_response = ""
     done = False
 
-    # If model provided a terminal summary directly (no tool calls), end cleanly.
     if not tool_calls:
         final_response = _extract_text_content(getattr(response, "content", ""))
         done = True
 
-    # Backward compatibility: accept legacy DONE call and terminate without executing it.
     if done_from_done_tool:
         final_response = done_from_done_tool
         done = True
 
-    # Hard stop guardrail when max iterations reached.
     next_step = state["step"] + 1
     if next_step >= max_iterations and not done:
         final_response = (
@@ -305,11 +388,12 @@ def reason_node(state: AgentState, llm: LLMLike, max_iterations: int) -> dict[st
         capability=tool_calls[0]["name"] if tool_calls else "final_answer",
         reasoning=reasoning,
         args=tool_calls[0]["args"] if tool_calls else {},
-        result_summary=final_response if final_response else ""
+        result_summary=final_response if final_response else "",
     )
 
-    # Do not forward tool-call message if it is the synthetic DONE call.
-    messages_update = [] if done_from_done_tool else [response]
+    # Combine compaction updates with the new AI response message
+    new_msgs = [] if done_from_done_tool else [response]
+    messages_update = compact_updates + new_msgs
 
     return {
         "messages": messages_update,
@@ -318,6 +402,7 @@ def reason_node(state: AgentState, llm: LLMLike, max_iterations: int) -> dict[st
         "done": done,
         "final_response": final_response,
     }
+
 
 # ---------------------------------------------------------------------------
 # LLM Factory
@@ -342,7 +427,6 @@ def get_ollama_llm(settings: Settings, model_name: str) -> ChatOllama:
     )
 
 
-# todo: langchain docs don't expose any CoT props to expose reasoning. see if modles like 5.4mini do this automatically.
 def get_openai_llm(settings: Settings, model_name: str) -> ChatOpenAI:
     return ChatOpenAI(
         model=model_name or settings.openai_model,
@@ -357,8 +441,6 @@ def get_anthropic_llm(settings: Settings, model_name: str) -> ChatAnthropic:
         api_key=settings.anthropic_api_key or None,
     )
     if settings.anthropic_thinking_budget > 0:
-        # Extended thinking requires temperature=1; exposes {"type":"thinking"} blocks
-        # which reason_node already handles (same format as Vertex).
         kwargs["thinking"] = {"type": "enabled", "budget_tokens": settings.anthropic_thinking_budget}
         kwargs["temperature"] = 1
     else:
@@ -374,7 +456,12 @@ _PROVIDER_FACTORIES = {
 }
 
 
-def get_llm() -> LLMLike:
+def get_llm() -> tuple[LLMLike, LLMLike]:
+    """Return (tool_bound_llm, raw_llm).
+
+    raw_llm is used for compaction summaries — it does not have robot tools bound,
+    so it cannot accidentally call capabilities during summarisation.
+    """
     settings = get_settings()
     configure_langsmith(settings)
 
@@ -386,65 +473,124 @@ def get_llm() -> LLMLike:
         supported = ", ".join(sorted(_PROVIDER_FACTORIES))
         raise ValueError(f"Unsupported LLM_PROVIDER '{provider}'. Choose one of: {supported}.")
 
-    return factory(settings, model_name).bind_tools(TOOLS)
+    raw = factory(settings, model_name)
+    bound = raw.bind_tools(TOOLS)
+    return bound, raw
+
+
+# ---------------------------------------------------------------------------
+# Checkpointer — module-level singleton, lazy-initialised
+# ---------------------------------------------------------------------------
+
+_checkpointer_registry: dict[str, Any] = {}
+
+
+async def _get_checkpointer(conn_string: str) -> Any:
+    """Return a cached AsyncPostgresSaver, or None if the DB is unreachable."""
+    if conn_string in _checkpointer_registry:
+        return _checkpointer_registry[conn_string]
+
+    try:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from psycopg_pool import AsyncConnectionPool
+
+        pool = AsyncConnectionPool(
+            conn_string,
+            max_size=5,
+            kwargs={"autocommit": True, "prepare_threshold": 0},
+            open=False,
+        )
+        await pool.open()
+        saver = AsyncPostgresSaver(pool)
+        await saver.setup()
+        _checkpointer_registry[conn_string] = saver
+        logger.info("Memory DB connected: %s", conn_string.split("@")[-1])
+        return saver
+
+    except Exception as exc:
+        logger.warning("Memory DB unavailable (%s) — running without persistence.", exc)
+        _checkpointer_registry[conn_string] = None
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def build_graph(llm: LLMLike, max_iterations: int = 10):
+def build_graph(
+    llm: LLMLike,
+    summary_llm: LLMLike,
+    max_iterations: int = 10,
+    checkpointer: Any = None,
+):
+    async def _reason_node(s: AgentState) -> dict[str, Any]:
+        return await reason_node(s, llm, summary_llm, max_iterations)
+    
     workflow = StateGraph(AgentState)
-    workflow.add_node("reason", lambda s: reason_node(s, llm, max_iterations))
+    workflow.add_node(
+        "reason",
+        _reason_node,
+    )
     workflow.add_node("tools", tool_node)
     workflow.add_edge(START, "reason")
     workflow.add_edge("tools", "reason")
     workflow.add_conditional_edges(
         "reason",
         should_continue_factory(max_iterations),
-        {
-            "tools": "tools",
-            "END": END
-        }
+        {"tools": "tools", "END": END},
     )
-    return workflow.compile()
+    return workflow.compile(checkpointer=checkpointer)
 
-async def astream_directive(directive: str, thread_id: str | None = None) -> AsyncGenerator[dict[str, Any], None]:
+
+async def astream_directive(
+    directive: str, thread_id: str | None = None
+) -> AsyncGenerator[dict[str, Any], None]:
     settings = get_settings()
-    model = get_llm()
-    graph = build_graph(model, settings.max_iterations)
+    llm, summary_llm = get_llm()
+
+    checkpointer = await _get_checkpointer(settings.get_memory_db_url())
+    graph = build_graph(llm, summary_llm, settings.max_iterations, checkpointer)
 
     run_thread_id = thread_id or str(uuid.uuid4())
-    initial_state = {
+
+    # Only the new user message is passed as input; the checkpointer merges it
+    # with the existing conversation history for this thread.
+    input_state = {
         "directive": directive,
-        "messages": [{"role": "user", "content": directive}],
+        "messages": [HumanMessage(content=directive)],
         "trace": [],
         "step": 0,
         "done": False,
-        "final_response": ""
+        "final_response": "",
     }
-    config = {"metadata": {"session_id": run_thread_id}}
+    config = {"configurable": {"thread_id": run_thread_id}}
 
-    async for update in graph.astream(initial_state, config=config):
+    async for update in graph.astream(input_state, config=config):
         yield update
 
+
 def run_directive(directive: str, thread_id: str | None = None) -> AgentRunResult:
-    # Legacy sync support
     return asyncio.run(_run_async_wrapper(directive, thread_id))
 
-async def _run_async_wrapper(directive: str, thread_id: str | None = None):
-    model = get_llm()
+
+async def _run_async_wrapper(directive: str, thread_id: str | None = None) -> AgentRunResult:
     settings = get_settings()
-    graph = build_graph(model, settings.max_iterations)
+    llm, summary_llm = get_llm()
+
+    checkpointer = await _get_checkpointer(settings.get_memory_db_url())
+    graph = build_graph(llm, summary_llm, settings.max_iterations, checkpointer)
+
     run_thread_id = thread_id or str(uuid.uuid4())
-    config = {"metadata": {"session_id": run_thread_id}}
+    config = {"configurable": {"thread_id": run_thread_id}}
+
     res = await graph.ainvoke(
         {
             "directive": directive,
-            "messages": [{"role": "user", "content": directive}],
+            "messages": [HumanMessage(content=directive)],
             "trace": [],
             "step": 0,
             "done": False,
-            "final_response": ""
+            "final_response": "",
         },
         config=config,
     )
@@ -452,5 +598,5 @@ async def _run_async_wrapper(directive: str, thread_id: str | None = None):
         final_response=res.get("final_response", ""),
         trace=res.get("trace", []),
         steps_taken=res.get("step", 0),
-        graph_mermaid=""
+        graph_mermaid="",
     )

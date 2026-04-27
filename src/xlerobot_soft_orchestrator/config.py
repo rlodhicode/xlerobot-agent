@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,8 +47,23 @@ class Settings(BaseSettings):
     langsmith_project: str = "xlerobot-orchestrator"
     langsmith_endpoint: str = "https://api.smith.langchain.com"
 
+    # Memory DB — PostgreSQL on laptop (same host as ZMQ / Ollama)
+    memory_db_host: str = "192.168.50.42"
+    memory_db_port: int = 5432
+    memory_db_name: str = "xlerobot_memory"
+    memory_db_user: str = "postgres"
+    memory_db_password: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
     max_iterations: int = 20
+
+    def get_memory_db_url(self) -> str:
+        user = quote(self.memory_db_user, safe="")
+        pwd_part = f":{quote(self.memory_db_password, safe='')}" if self.memory_db_password else ""
+        return (
+            f"postgresql://{user}{pwd_part}"
+            f"@{self.memory_db_host}:{self.memory_db_port}/{self.memory_db_name}"
+        )
 
 
 def get_settings() -> Settings:
