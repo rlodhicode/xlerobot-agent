@@ -185,14 +185,6 @@ with st.sidebar:
     expand_thinking = st.toggle("Expand thinking by default", value=False)
 
     st.divider()
-    st.subheader("Camera")
-    st.caption(
-        "Set `USE_REALSENSE=true` in your `.env` to use the Intel RealSense. "
-        "Otherwise OpenCV camera index 0 is used.\n\n"
-        "Set `OPENCV_CAMERA_INDEX=<n>` to pick a different USB camera."
-    )
-
-    st.divider()
     st.subheader("Thread")
     turn_count = len(st.session_state.conversation)
     st.caption(f"**ID:** `{st.session_state.thread_id}`")
