@@ -482,14 +482,14 @@ def get_llm() -> tuple[LLMLike, LLMLike]:
 # Checkpointer — module-level singleton, lazy-initialised
 # ---------------------------------------------------------------------------
 
-_checkpointer_registry: dict[str, Any] = {}
-
 
 async def _get_checkpointer(conn_string: str) -> Any:
-    """Return a cached AsyncPostgresSaver, or None if the DB is unreachable."""
-    if conn_string in _checkpointer_registry:
-        return _checkpointer_registry[conn_string]
-
+    """Return an AsyncPostgresSaver, or None if the DB is unreachable.
+    
+    Note: We do NOT cache the checkpointer because asyncio locks are bound to 
+    their event loop. In Streamlit and other frameworks that create new event loops
+    per request, reusing a cached checkpointer causes "bound to a different event loop" errors.
+    """
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from psycopg_pool import AsyncConnectionPool
@@ -503,13 +503,11 @@ async def _get_checkpointer(conn_string: str) -> Any:
         await pool.open()
         saver = AsyncPostgresSaver(pool)
         await saver.setup()
-        _checkpointer_registry[conn_string] = saver
         logger.info("Memory DB connected: %s", conn_string.split("@")[-1])
         return saver
 
     except Exception as exc:
         logger.warning("Memory DB unavailable (%s) — running without persistence.", exc)
-        _checkpointer_registry[conn_string] = None
         return None
 
 
