@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-haiku-4-5"
-    anthropic_thinking_budget: int = 8000  # 0 disables extended thinking
+    anthropic_thinking_budget: int = 2000  # 0 disables extended thinking
 
     langsmith_tracing: bool = True
     langsmith_api_key: str = ""
