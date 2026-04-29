@@ -2,7 +2,7 @@
 
 This is a simple, dockerized Python app that uses a **LangGraph agent workflow** with:
 
-- Pluggable LLM backend via config (`vertex` or `ollama`)
+- Pluggable LLM backend via config (`vertex`, `anthropic`, `openai`, or `ollama`)
 - **LangSmith** for execution tracing
 - **Streamlit** for a lightweight UI that shows planner/tool/response trace events
 
@@ -18,6 +18,7 @@ The workflow processes a user directive into a task-oriented result:
 3. Responder node returns a final response with structured output.
 
 The app also displays:
+
 - graph topology (`mermaid`)
 - local tool/graph trace events in the UI
 - full run traces in LangSmith (if configured)
