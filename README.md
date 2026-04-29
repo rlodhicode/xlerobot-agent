@@ -1,12 +1,10 @@
-# XLERobot Software-Only Orchestrator (Prototype)
+# XLERobot Orchestrator
 
 This is a simple, dockerized Python app that uses a **LangGraph agent workflow** with:
 
 - Pluggable LLM backend via config (`vertex` or `ollama`)
 - **LangSmith** for execution tracing
 - **Streamlit** for a lightweight UI that shows planner/tool/response trace events
-
-It is intentionally **software-only** and makes **no calls to external hardware**.
 
 ## What this prototype does
 
@@ -28,15 +26,13 @@ The app also displays:
 
 ```text
 .
-├── src/xlerobot_soft_orchestrator/
-│   ├── agent.py
+├── src/orchestrator/
+│   ├── agent/
+│   ├── capabilities/
 │   ├── config.py
 │   ├── main.py
-│   ├── tools.py
-│   └── ui.py
-├── tests/
-│   ├── test_agent.py
-│   └── test_tools.py
+│   ├── ui.py
+│   └── notebooks/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
@@ -112,13 +108,13 @@ pytest
 Run Streamlit UI:
 
 ```bash
-streamlit run src/xlerobot_soft_orchestrator/ui.py
+streamlit run src/orchestrator/ui.py
 ```
 
 Optional CLI run:
 
 ```bash
-python -m xlerobot_soft_orchestrator.main "Create a simple morning triage plan"
+python -m orchestrator.main "Create a simple morning triage plan"
 ```
 
 ## Docker run

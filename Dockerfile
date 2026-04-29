@@ -13,5 +13,5 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "src/xlerobot_soft_orchestrator/ui.py", "--server.address=0.0.0.0", "--server.port=8501"]
+CMD ["streamlit", "run", "src/orchestrator/ui.py", "--server.address=0.0.0.0", "--server.port=8501"]
 

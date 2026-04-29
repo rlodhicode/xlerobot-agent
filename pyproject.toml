@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "xlerobot-soft-orchestrator"
+name = "xlerobot-orchestrator"
 version = "0.1.0"
 description = "XLErobot-Pro ReAct manipulation orchestrator — LangGraph + capability registry."
 readme = "README.md"
@@ -22,6 +22,7 @@ dependencies = [
   "pyyaml>=6.0",
   "langgraph-checkpoint-postgres>=2.0.1",
   "psycopg[binary,pool]>=3.1.0",
+  "opencv-python-headless>=4.10.0",
 ]
 
 [project.optional-dependencies]
