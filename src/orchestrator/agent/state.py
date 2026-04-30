@@ -61,7 +61,7 @@ You have two distinct camera views:
   - wrist camera → close-up end-effector view (grasp quality, held object)
 
 Use the correct camera for the task:
-  - observe_with_base_camera:  scene understanding, "what's on the table?"
+  - observe_with_base_camera:  scene understanding, "what's on the table?", initial scene checks
   - observe_with_wrist_camera: grasp confirmation, "what's in the gripper?"
   - observe_with_both_cameras: when you need full context simultaneously
   - yolo_base_camera:          locate objects on the table by bounding box
@@ -69,6 +69,13 @@ Use the correct camera for the task:
 
 Always pass a specific question when calling an observe capability.
 Do not rely on frame images in your reasoning — the VLM description is your observation.
+
+=== POLICY OBSERVATION RULES ===
+During and after ANY VLA policy execution (picking OR placing), ALWAYS use the
+wrist camera to verify the outcome. Never use the base camera to verify policy results.
+
+  - After screw_picking:  use observe_with_wrist_camera — "Is the screw firmly in the gripper?"
+  - After screw_placing:  use observe_with_wrist_camera — "Is the gripper empty / has the screw been released?"
 
 === VLA POLICY EXECUTION ===
 To run a manipulation policy:

@@ -5,7 +5,7 @@ import json
 from typing import Any, AsyncGenerator, Callable
 
 from langgraph.prebuilt import ToolNode
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from ..config import get_settings
@@ -75,23 +75,9 @@ def should_continue_factory(max_iterations: int) -> Callable[[AgentState], str]:
 async def reason_node(
     state: AgentState,
     llm: LLMLike,
-    summary_llm: LLMLike,
     max_iterations: int,
 ) -> dict[str, Any]:
-    # Compact conversation history if it exceeds the token threshold
-    compact_updates = await compact_if_needed(state["messages"], summary_llm)
-    if compact_updates:
-        ids_to_remove = {u.id for u in compact_updates if isinstance(u, RemoveMessage)}
-        summaries = [u for u in compact_updates if not isinstance(u, RemoveMessage)]
-        messages = [
-            m for m in state["messages"]
-            if getattr(m, "id", None) not in ids_to_remove
-        ]
-        messages = summaries + messages
-        logger.info("Compacted conversation: removed %d messages, added summary.", len(ids_to_remove))
-    else:
-        messages = state["messages"]
-        compact_updates = []
+    messages = state["messages"]
 
     system = SYSTEM_PROMPT.replace("{{MAX_ITERATIONS}}", str(max_iterations))
     clean_messages = _strip_frame_b64_from_tool_messages(messages)
@@ -165,7 +151,7 @@ async def reason_node(
 
     # Combine compaction updates with the new AI response message
     new_msgs = [] if done_from_done_tool else [response]
-    messages_update = compact_updates + new_msgs
+    messages_update = [] if done_from_done_tool else [response]
 
     return {
         "messages": messages_update,
@@ -177,9 +163,9 @@ async def reason_node(
 
 tool_node = ToolNode(TOOLS)
 
-def build_graph(llm: LLMLike, summary_llm: LLMLike, max_iterations: int = 10, checkpointer: Any = None):
+def build_graph(llm: LLMLike, max_iterations: int = 10, checkpointer: Any = None):
     async def _reason_node(s: AgentState) -> dict[str, Any]:
-        return await reason_node(s, llm, summary_llm, max_iterations)
+        return await reason_node(s, llm, max_iterations)
     
     workflow = StateGraph(AgentState)
     workflow.add_node("reason", _reason_node)
@@ -195,9 +181,9 @@ def build_graph(llm: LLMLike, summary_llm: LLMLike, max_iterations: int = 10, ch
 
 async def astream_directive(directive: str, thread_id: str | None = None) -> AsyncGenerator[dict[str, Any], None]:
     settings = get_settings()
-    llm, summary_llm = get_llm()
+    llm = get_llm()
     checkpointer = await get_checkpointer(settings.get_memory_db_url())
-    graph = build_graph(llm, summary_llm, settings.max_iterations, checkpointer)
+    graph = build_graph(llm, settings.max_iterations, checkpointer)
     run_thread_id = thread_id or str(uuid.uuid4())
 
     # Only the new user message is passed as input; the checkpointer merges it
@@ -220,9 +206,9 @@ def run_directive(directive: str, thread_id: str | None = None) -> AgentRunResul
 
 async def _run_async_wrapper(directive: str, thread_id: str | None = None) -> AgentRunResult:
     settings = get_settings()
-    llm, summary_llm = get_llm()
+    llm = get_llm()
     checkpointer = await get_checkpointer(settings.get_memory_db_url())
-    graph = build_graph(llm, summary_llm, settings.max_iterations, checkpointer)
+    graph = build_graph(llm, settings.max_iterations, checkpointer)
     run_thread_id = thread_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": run_thread_id}}
 

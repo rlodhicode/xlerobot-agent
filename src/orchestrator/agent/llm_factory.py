@@ -72,5 +72,4 @@ def get_llm() -> tuple[LLMLike, LLMLike]:
         raise ValueError(f"Unsupported LLM_PROVIDER '{provider}'. Choose one of: {supported}.")
 
     raw = factory(settings, model_name)
-    bound = raw.bind_tools(TOOLS)
-    return bound, raw
+    return raw.bind_tools(TOOLS)

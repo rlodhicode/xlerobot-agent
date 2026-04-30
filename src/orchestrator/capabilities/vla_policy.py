@@ -24,6 +24,7 @@ POLICIES: dict[str, dict[str, str]] = _load_policies()
 
 
 _vla_process: subprocess.Popen | None = None
+_vla_ready_time: float | None = None
 _VLA_SERVER         = os.getenv("VLA_INFERENCE_SERVER", "192.168.50.42:8080")
 _ROBOT_PORT         = os.getenv("ROBOT_PORT", "/dev/ttyACM0")
 _ROBOT_ID           = os.getenv("ROBOT_ID", "left_arm")
@@ -64,7 +65,8 @@ def _watch_log_file(log_path: Path, process: subprocess.Popen, ready_event: thre
 
 
 def start_vla_policy_fn(policy_id: str, **kwargs: Any) -> dict[str, Any]:
-    global _vla_process, _vla_log_path
+    global _vla_process, _vla_log_path, _vla_ready_time
+    _vla_ready_time = None
 
     if _vla_process is not None and _vla_process.poll() is None:
         return {"status": "FAILURE", "error": "A VLA policy is already running. Call stop_vla_policy first.", "pid": _vla_process.pid}
@@ -85,7 +87,7 @@ def start_vla_policy_fn(policy_id: str, **kwargs: Any) -> dict[str, Any]:
         f"--task={policy_cfg['task']}", f"--server_address={_VLA_SERVER}",
         f"--policy_type={policy_cfg['policy_type']}",
         f"--pretrained_name_or_path={policy_cfg['repo_id']}",
-        "--policy_device=cuda", "--client_device=cpu", "--actions_per_chunk=50",
+        "--policy_device=cuda", "--client_device=cpu", "--actions_per_chunk=25",
     ]
 
     # Write output to a file, NOT a PIPE.  A PIPE has a finite kernel buffer
@@ -114,6 +116,9 @@ def start_vla_policy_fn(policy_id: str, **kwargs: Any) -> dict[str, Any]:
     threading.Thread(target=_watch_log_file, args=(_vla_log_path, _vla_process, ready_event, signal_seen, output_buf), daemon=True).start()
 
     ready_event.wait(timeout=_VLA_START_TIMEOUT)
+
+    if signal_seen[0]:
+        _vla_ready_time = time.monotonic()
 
     def _tail(n: int = 30) -> str:
         lines = output_buf[-n:] if output_buf else []
@@ -159,8 +164,16 @@ def stop_vla_policy_fn(**kwargs: Any) -> dict[str, Any]:
     except subprocess.TimeoutExpired:
         _vla_process.kill()
         _vla_process.wait()
+
+    elapsed: float | None = None
+    if _vla_ready_time is not None:
+        elapsed = round(time.monotonic() - _vla_ready_time, 2)
+
     _vla_process = None
-    return {"status": "SUCCESS", "message": "VLA policy stopped."}
+    result: dict[str, Any] = {"status": "SUCCESS", "message": "VLA policy stopped."}
+    if elapsed is not None:
+        result["policy_run_duration_seconds"] = elapsed
+    return result
 
 
 def wait_fn(seconds: int, **kwargs: Any) -> dict[str, Any]:

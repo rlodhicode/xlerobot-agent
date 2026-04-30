@@ -39,8 +39,8 @@ NUM_EPISODES   = 100
 FPS            = 30
 EPISODE_TIME_S = 60
 RESET_TIME_S   = 15
-TASK           = "Pick the screw"
-HF_REPO_ID     = "rlodhi/screw_pick_perfect"
+TASK           = "pick the screw, and place it in the container"
+HF_REPO_ID     = "rlodhi/screw_pick_place"
 
 FOLLOWER_PORT  = "/dev/ttyACM0"
 LEADER_PORT    = "/dev/ttyACM1"
