@@ -44,7 +44,9 @@ def _build_queries(target_object: str) -> list[str]:
         return _EV_BATTERY_QUERIES
     requested = {lbl.strip().lower() for lbl in target_object.split(",") if lbl.strip()}
     matched = [q for q in _EV_BATTERY_QUERIES if q.lower() in requested]
-    return matched if matched else [lbl.strip() for lbl in target_object.split(",") if lbl.strip()]
+    # If any requested labels matched, return the matched ones.
+    # If none matched (invalid queries), default to all available queries.
+    return matched if matched else _EV_BATTERY_QUERIES
 
 
 def _run_yolo_detection(
