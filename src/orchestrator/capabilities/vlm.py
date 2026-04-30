@@ -6,14 +6,13 @@ from .camera import get_frame, frame_to_base64, frame_to_base64_vlm
 
 logger = logging.getLogger(__name__)
 
-
+# TODO: generalize or dynamically inject different world model conditioning for different tasks
 _VLM_PREAMBLE_BASE = (
     "CONTEXT: You are analysing an image from the fixed base (overview) camera "
     "of a robot manipulation workstation. The workspace contains EV battery components: "
     "screws, nuts, bolts, orange plastic covers, bus bars, and small containers/trays "
     "used to collect picked parts. The robot arm may appear at the edge of the frame. "
-    "Answer concisely and literally — if you can see the object, say so; "
-    "if you cannot, say so.\n\nQUESTION: "
+    "Answer concisely and literally \n\nQUESTION: "
 )
 
 _VLM_PREAMBLE_WRIST = (
@@ -22,8 +21,7 @@ _VLM_PREAMBLE_WRIST = (
     "fingers (end-effector). A successfully grasped object will appear between or pressed "
     "against those gripper fingers. The workspace contains EV battery components: screws, "
     "nuts, bolts, and small plastic containers. "
-    "Answer concisely and literally — if you can see the object, say so; "
-    "if you cannot, say so.\n\nQUESTION: "
+    "Answer concisely and literally \n\nQUESTION: "
 )
 
 
