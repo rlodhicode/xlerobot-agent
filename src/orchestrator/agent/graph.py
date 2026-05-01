@@ -74,38 +74,35 @@ def _update_thread_metadata_in_langsmith(thread_id: str, token_aggregator: Threa
         # Get LangSmith client
         ls_client = Client()
         summary = token_aggregator.get_summary()
+        if summary["total_tokens"] == 0:
+            logger.debug("No tokens to report, skipping LangSmith update")
+            return
 
-        # Update thread metadata with aggregated token counts
-        # LangSmith expects thread metadata to be set via the API
-        # The tokens will be visible in the thread details
-        metadata = {
-            "total_input_tokens": summary["total_input_tokens"],
-            "total_output_tokens": summary["total_output_tokens"],
-            "total_tokens": summary["total_tokens"],
-            "llm_call_count": summary["call_count"],
-        }
+        # list_runs requires at least one of: session, id, parent_run, trace, reference_example
+        # Use session (project name) + thread_id tag filter instead
+        project = os.getenv("LANGCHAIN_PROJECT", "xlerobot-pro")
+        runs = list(ls_client.list_runs(
+            project_name=project,
+            filter=f'and(eq(thread_id, "{thread_id}"))',
+        ))
 
-        # Use the LangSmith API to update thread tags/metadata
-        # Note: This requires using the LangSmith SDK's internal methods
-        # The thread metadata is stored via the client.update_run method or by
-        # setting feedback/tags on the thread
-        try:
-            # Try to update thread metadata by querying runs and setting feedback
-            runs = ls_client.list_runs(filter=f'and(eq(thread_id, "{thread_id}"), ne(parent_run_id, null))')
-            if runs:
-                # Set metadata as feedback on the thread runs
-                for run in runs:
-                    if run.parent_run_id is None:
-                        # Found root run of thread
-                        ls_client.update_run(run.id, tags=list(metadata.keys()))
-                        logger.info(f"Updated thread {thread_id} metadata: {metadata}")
-                        break
-        except Exception as e:
-            logger.warning(f"Could not update thread metadata via runs: {e}")
+        if not runs:
+            logger.debug("No runs found for thread %s", thread_id)
+            return
+
+        # Find root run and attach token summary as feedback
+        root_run = next((r for r in runs if r.parent_run_id is None), runs[0])
+        ls_client.create_feedback(
+            run_id=root_run.id,
+            key="token_usage",
+            score=summary["total_tokens"],
+            value=summary,
+            comment=f"input={summary['total_input_tokens']} output={summary['total_output_tokens']} calls={summary['call_count']}",
+        )
+        logger.info("Posted token usage to LangSmith run %s: %s", root_run.id, summary)
 
     except Exception as e:
-        logger.warning(f"Failed to update thread metadata in LangSmith: {e}")
-
+        logger.warning("Failed to update thread metadata in LangSmith: %s", e)
 
 def should_continue_factory(max_iterations: int) -> Callable[[AgentState], str]:
     def should_continue(state: AgentState) -> str:

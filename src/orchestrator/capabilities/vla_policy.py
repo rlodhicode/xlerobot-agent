@@ -66,10 +66,11 @@ def _watch_log_file(log_path: Path, process: subprocess.Popen, ready_event: thre
 
 def start_vla_policy_fn(policy_id: str, **kwargs: Any) -> dict[str, Any]:
     global _vla_process, _vla_log_path, _vla_ready_time
-    _vla_ready_time = None
 
     if _vla_process is not None and _vla_process.poll() is None:
         return {"status": "FAILURE", "error": "A VLA policy is already running. Call stop_vla_policy first.", "pid": _vla_process.pid}
+    
+    _vla_ready_time = None
 
     policy_cfg = POLICIES.get(policy_id)
     if not policy_cfg:
@@ -87,7 +88,7 @@ def start_vla_policy_fn(policy_id: str, **kwargs: Any) -> dict[str, Any]:
         f"--task={policy_cfg['task']}", f"--server_address={_VLA_SERVER}",
         f"--policy_type={policy_cfg['policy_type']}",
         f"--pretrained_name_or_path={policy_cfg['repo_id']}",
-        "--policy_device=cuda", "--client_device=cpu", "--actions_per_chunk=25",
+        "--policy_device=cuda", "--client_device=cuda", "--actions_per_chunk=25",
     ]
 
     # Write output to a file, NOT a PIPE.  A PIPE has a finite kernel buffer

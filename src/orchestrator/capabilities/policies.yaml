@@ -9,4 +9,4 @@ screw_placing:
   policy_type: "smolvla"
   repo_id: "rlodhi/screw_placing_5k_smolvla"
   task: "place the screw in the container"
-  typical_wait_time: 35
+  typical_wait_time: 25

@@ -15,49 +15,57 @@ class ThreadTokenAggregator(BaseCallbackHandler):
     def __init__(self):
         self.total_input_tokens = 0
         self.total_output_tokens = 0
-        self.total_cost = 0.0
         self.call_count = 0
 
-    def on_llm_end(
-        self,
-        response: LLMResult,
-        *,
-        run_id: str,
-        parent_run_id: Optional[str] = None,
-        **kwargs: Any,
-    ) -> None:
-        """Called when LLM call ends."""
+    def _ingest_usage(self, usage: dict) -> bool:
+        """Try known usage dict shapes. Returns True if any tokens were found."""
+        # OpenAI shape: {"prompt_tokens": N, "completion_tokens": N}
+        # Anthropic/Vertex shape: {"input_tokens": N, "output_tokens": N}
+        inp = (
+            usage.get("input_tokens")
+            or usage.get("prompt_tokens")
+            or 0
+        )
+        out = (
+            usage.get("output_tokens")
+            or usage.get("completion_tokens")
+            or 0
+        )
+        if inp or out:
+            self.total_input_tokens += inp
+            self.total_output_tokens += out
+            self.call_count += 1
+            return True
+        return False
+
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
         try:
-            # Try to get usage metadata from response
-            if hasattr(response, "llm_output"):
-                output = response.llm_output or {}
-                usage = output.get("usage_metadata", {}) or {}
-                if usage:
-                    self.total_input_tokens += usage.get("input_tokens", 0)
-                    self.total_output_tokens += usage.get("output_tokens", 0)
-                    self.call_count += 1
+            # Path 1: llm_output (common for older LangChain OpenAI wrapper)
+            llm_output = getattr(response, "llm_output", {}) or {}
+            usage = llm_output.get("token_usage") or llm_output.get("usage_metadata") or {}
+            if usage and self._ingest_usage(usage):
+                return
 
-            # Also try direct usage_metadata attribute
-            if hasattr(response, "usage_metadata"):
-                usage = response.usage_metadata or {}
-                if usage:
-                    self.total_input_tokens += usage.get("input_tokens", 0)
-                    self.total_output_tokens += usage.get("output_tokens", 0)
-                    self.call_count += 1
+            # Path 2: iterate generations looking for usage_metadata on the message
+            for gen_list in (getattr(response, "generations", None) or []):
+                for gen in gen_list:
+                    # ChatGeneration has a .message with usage_metadata
+                    msg = getattr(gen, "message", None)
+                    usage = getattr(msg, "usage_metadata", None) or {}
+                    if usage and self._ingest_usage(usage):
+                        return
+                    # Some providers put it directly on the generation
+                    usage = getattr(gen, "usage_metadata", None) or {}
+                    if usage and self._ingest_usage(usage):
+                        return
 
-            # Try generations (for newer versions)
-            if hasattr(response, "generations") and response.generations:
-                for generation_list in response.generations:
-                    for generation in generation_list:
-                        if hasattr(generation, "usage_metadata"):
-                            usage = generation.usage_metadata or {}
-                            if usage:
-                                self.total_input_tokens += usage.get("input_tokens", 0)
-                                self.total_output_tokens += usage.get("output_tokens", 0)
-                                self.call_count += 1
+            # Path 3: response-level usage_metadata (Anthropic)
+            usage = getattr(response, "usage_metadata", None) or {}
+            if usage:
+                self._ingest_usage(usage)
 
         except Exception as e:
-            logger.debug(f"Error extracting token metadata: {e}")
+            logger.debug("Error extracting token metadata: %s", e)
 
     def get_summary(self) -> Dict[str, Any]:
         """Get aggregated token usage."""
@@ -72,5 +80,4 @@ class ThreadTokenAggregator(BaseCallbackHandler):
         """Reset aggregation."""
         self.total_input_tokens = 0
         self.total_output_tokens = 0
-        self.total_cost = 0.0
         self.call_count = 0

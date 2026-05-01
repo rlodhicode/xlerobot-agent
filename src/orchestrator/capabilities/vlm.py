@@ -19,8 +19,8 @@ _VLM_PREAMBLE_WRIST = (
     "CONTEXT: You are analysing an image from the wrist-mounted camera on a robot arm. "
     "The black ribbed cylindrical structures visible are the robot's parallel-jaw gripper "
     "fingers (end-effector). A successfully grasped object will appear between or pressed "
-    "against those gripper fingers. The workspace contains EV battery components: screws, "
-    "nuts, bolts, and small plastic containers. "
+    "against those gripper fingers. For questions verifying grasp, check the contact points "
+    "between the gripper fingers and the object. Are the fingers physically touching the sides of the object, or is there a gap? "
     "Answer concisely and literally \n\nQUESTION: "
 )
 

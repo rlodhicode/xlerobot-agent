@@ -25,7 +25,7 @@ REGISTRY: dict[str, Capability] = {
         doc="""Capability: observe_with_base_camera
         --------------------------------------
         Purpose:
-        Captures the base RealSense/ZMQ camera frame and sends it to Gemini Vision
+        Captures the base ZMQ camera frame and sends it to Gemini Vision
         along with your question. Returns a natural-language answer.
 
         The raw frame is returned as frame_b64 for the UI only — it is NOT in the
@@ -34,7 +34,7 @@ REGISTRY: dict[str, Capability] = {
         Required args:  (none)
         Optional args:
         question (str) — Specific question to guide the VLM response.
-                        e.g. "Is a screw visible on the table?"
+                        e.g. "Is a screw visible on the black surface?"
                         Leave empty for a full scene description.
 
         Returns:
@@ -42,7 +42,7 @@ REGISTRY: dict[str, Capability] = {
         frame_b64:   raw base camera frame (UI only)
         error:       non-empty if something failed
 
-        Use for: "what do you see?", "is the table clear?", "describe the workspace"
+        Use for: "what do you see?", "describe the workspace"
         Do NOT use for precise object coordinates — use yolo_base_camera instead.
         """,
         fn=observe_with_base_camera_fn,
@@ -62,7 +62,7 @@ REGISTRY: dict[str, Capability] = {
 
         Required args:  (none)
         Optional args:
-        question (str) — e.g. "Is the screw firmly grasped?", "What is in the gripper?"
+        question (str) — e.g. "Is the screw firmly grasped, and away from the black surface?", "What is in the gripper?"
 
         Returns:
         description: VLM answer
@@ -213,7 +213,7 @@ REGISTRY: dict[str, Capability] = {
         Use after start_vla_policy to give the robot time to execute the policy.
 
         Required args:
-        seconds (int) — number of seconds to wait, e.g. 20.
+        seconds (int) — number of seconds to wait, e.g. 40.
 
         Returns:
         status:  "SUCCESS"
